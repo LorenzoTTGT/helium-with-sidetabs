@@ -5,7 +5,7 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - 'helium/patches/**'
+      - 'patches/**'
       - '.github/workflows/**'
 
 jobs:
@@ -22,11 +22,11 @@ jobs:
         echo "🔍 Validating vertical tabs patch files..."
 
         patches=(
-          "helium/patches/helium/ui/vertical-tabs.patch"
-          "helium/patches/helium/ui/vertical-tabs-resizable.patch"
-          "helium/patches/helium/ui/vertical-tabs-context-menu.patch"
-          "helium/patches/helium/ui/hide-horizontal-tabs.patch"
-          "helium/patches/helium/ui/vertical-tab-style.patch"
+          "patches/helium/ui/vertical-tabs.patch"
+          "patches/helium/ui/vertical-tabs-resizable.patch"
+          "patches/helium/ui/vertical-tabs-context-menu.patch"
+          "patches/helium/ui/hide-horizontal-tabs.patch"
+          "patches/helium/ui/vertical-tab-style.patch"
         )
 
         all_valid=true
@@ -117,11 +117,11 @@ jobs:
       run: |
         echo "📋 Copying vertical tabs patches..."
         mkdir -p helium-test/patches/helium/ui/
-        cp patches-repo/helium/patches/helium/ui/*.patch helium-test/patches/helium/ui/
+        cp patches-repo/patches/helium/ui/vertical*.patch patches-repo/patches/helium/ui/hide-horizontal-tabs.patch helium-test/patches/helium/ui/
 
         echo ""
         echo "✅ Patches copied:"
-        ls -lh helium-test/patches/helium/ui/*.patch | grep vertical
+        ls -lh helium-test/patches/helium/ui/*.patch | grep -E "(vertical|hide-horizontal)"
 
     - name: Verify patches are ready
       run: |
