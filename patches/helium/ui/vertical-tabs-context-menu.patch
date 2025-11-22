@@ -1,0 +1,54 @@
+--- a/chrome/browser/ui/views/tabs/tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/tabs/tab_strip_region_view.cc
+@@ -10,6 +10,9 @@
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/tabs/features.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "ui/base/models/simple_menu_model.h"
++#include "ui/views/context_menu_controller.h"
++#include "ui/views/controls/menu/menu_runner.h"
+ 
+   // Configure tab strip for vertical layout
+   if (tabs::IsVerticalTabsFeatureEnabled()) {
++    // Enable right-click context menu
++    set_context_menu_controller(this);
+   }
+ 
++void TabStripRegionView::ShowContextMenuForViewImpl(
++    View* source, const gfx::Point& point, ui::MenuSourceType source_type) {
++  if (!tabs::IsVerticalTabsFeatureEnabled()) return;
++
++  context_menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  PrefService* prefs = browser_view_->GetProfile()->GetPrefs();
++
++  context_menu_model_->AddRadioItem(1, u"Sidebar on left", 0);
++  context_menu_model_->AddRadioItem(2, u"Sidebar on right", 0);
++  context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
++  context_menu_model_->AddItem(3, u"Reset sidebar width");
++
++  context_menu_runner_ = std::make_unique<views::MenuRunner>(
++      context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
++  context_menu_runner_->RunMenuAt(GetWidget(), nullptr, gfx::Rect(point, gfx::Size()),
++      views::MenuAnchorPosition::kTopLeft, source_type);
++}
++
++bool TabStripRegionView::IsCommandIdChecked(int command_id) const {
++  PrefService* prefs = browser_view_->GetProfile()->GetPrefs();
++  bool on_right = prefs->GetBoolean("helium.vertical_tabs.on_right");
++  if (command_id == 1) return !on_right;
++  if (command_id == 2) return on_right;
++  return false;
++}
++
++void TabStripRegionView::ExecuteCommand(int command_id, int event_flags) {
++  PrefService* prefs = browser_view_->GetProfile()->GetPrefs();
++  if (command_id == 1) {
++    prefs->SetBoolean("helium.vertical_tabs.on_right", false);
++    browser_view_->InvalidateLayout();
++  } else if (command_id == 2) {
++    prefs->SetBoolean("helium.vertical_tabs.on_right", true);
++    browser_view_->InvalidateLayout();
++  } else if (command_id == 3) {
++    static_cast<BrowserView*>(browser_view_)->SetVerticalTabStripWidth(250);
++  }
++}

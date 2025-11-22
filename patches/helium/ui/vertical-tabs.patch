@@ -1,0 +1,195 @@
+--- a/chrome/browser/ui/tabs/features.cc
++++ b/chrome/browser/ui/tabs/features.cc
+@@ -8,7 +8,7 @@
+
+ namespace tabs {
+
+-BASE_FEATURE(kVerticalTabs, base::FEATURE_DISABLED_BY_DEFAULT);
++BASE_FEATURE(kVerticalTabs, base::FEATURE_ENABLED_BY_DEFAULT);
+
+ bool IsVerticalTabsFeatureEnabled() {
+   return base::FeatureList::IsEnabled(kVerticalTabs);
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -792,6 +792,21 @@ BrowserView::BrowserView(Browser* browser)
+
+   top_container_ = AddChildView(std::make_unique<TopContainerView>(this));
+
++  // Create vertical tab strip container if enabled
++  if (tabs::IsVerticalTabsFeatureEnabled() && GetIsNormalType()) {
++    auto vertical_tab_strip_container =
++        std::make_unique<views::View>();
++    vertical_tab_strip_container->SetLayoutManager(
++        std::make_unique<views::FillLayout>());
++    vertical_tab_strip_container_ =
++        AddChildViewAt(std::move(vertical_tab_strip_container), 0);
++
++    // Add tab strip to vertical container
++    tab_strip_region_view_ =
++        vertical_tab_strip_container_->AddChildView(
++            std::make_unique<TabStripRegionView>(this));
++  } else {
++    // Standard horizontal tab strip in top container
+   tab_strip_region_view_ =
+       top_container_->AddChildView(std::make_unique<TabStripRegionView>(this));
++  }
+
+   if (tabs::IsVerticalTabsFeatureEnabled()) {
+     auto vertical_tab_strip_container =
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -800,6 +800,9 @@ class BrowserView : public BrowserWindow,
+   // The view holding the tabstrip and toolbar.
+   raw_ptr<TopContainerView> top_container_ = nullptr;
+
++  // Container for vertical tab strip (when enabled)
++  raw_ptr<views::View> vertical_tab_strip_container_ = nullptr;
++
+   // The TabStrip region view.
+   raw_ptr<TabStripRegionView> tab_strip_region_view_ = nullptr;
+
+--- a/chrome/browser/ui/views/frame/browser_view_layout.cc
++++ b/chrome/browser/ui/views/frame/browser_view_layout.cc
+@@ -18,6 +18,7 @@
+ #include "chrome/browser/ui/find_bar/find_bar_controller.h"
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/tab_ui_helper.h"
++#include "chrome/browser/ui/tabs/features.h"
+ #include "chrome/browser/ui/view_ids.h"
+ #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
+ #include "chrome/browser/ui/views/download/download_shelf_view.h"
+@@ -299,6 +300,41 @@ int BrowserViewLayout::LayoutTabStrip(int top, int width,
+                                        int browser_view_y) {
+   TRACE_EVENT0("ui", "BrowserViewLayout::LayoutTabStrip");
+   if (delegate_->IsTabStripVisible()) {
++    // Handle vertical tab strip layout
++    if (tabs::IsVerticalTabsFeatureEnabled() &&
++        vertical_tab_strip_container_ != nullptr) {
++
++      constexpr int kVerticalTabStripWidth = 250;
++      const int vertical_tab_strip_height =
++          std::max(0, height_ - top - infobar_y_);
++
++      // Position vertical tab strip on the left side
++      vertical_tab_strip_container_->SetBounds(
++          0, top, kVerticalTabStripWidth, vertical_tab_strip_height);
++
++      // Make tab strip region fill the vertical container
++      if (tab_strip_region_view_) {
++        tab_strip_region_view_->SetBounds(
++            0, 0, kVerticalTabStripWidth, vertical_tab_strip_height);
++      }
++
++      SetViewVisibility(vertical_tab_strip_container_, true);
++
++      // Adjust available bounds to account for vertical tab strip
++      available_bounds->set_x(kVerticalTabStripWidth);
++      available_bounds->set_width(
++          available_bounds->width() - kVerticalTabStripWidth);
++
++      // Hide the top tab strip region
++      if (tab_strip_region_view_ &&
++          tab_strip_region_view_->parent() == top_container_) {
++        SetViewVisibility(tab_strip_region_view_, false);
++      }
++
++      return top;
++    }
++
++    // Standard horizontal tab strip layout
+     const int tab_strip_height = GetLayoutConstant(TAB_STRIP_HEIGHT);
+     tab_strip_region_view_->SetBounds(0, top, width, tab_strip_height);
+     return top + tab_strip_height;
+@@ -535,6 +571,12 @@ void BrowserViewLayout::LayoutVerticalTabStripRegion() {
+
+ void BrowserViewLayout::LayoutTabStripRegion(gfx::Rect& available_bounds) {
+   TRACE_EVENT0("ui", "BrowserViewLayout::LayoutTabStripRegion");
++
++  // Skip if using vertical tabs (handled in LayoutTabStrip)
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    return;
++  }
++
+   if (!delegate_->ShouldDrawTabStrip()) {
+     SetViewVisibility(tab_strip_region_view_, false);
+     tab_strip_region_view_->SetBounds(0, 0, 0, 0);
+--- a/chrome/browser/ui/views/frame/browser_view_layout.h
++++ b/chrome/browser/ui/views/frame/browser_view_layout.h
+@@ -181,6 +181,7 @@ class BrowserViewLayout : public views::LayoutManagerBase {
+   raw_ptr<BrowserViewLayoutDelegate> delegate_ = nullptr;
+
+   raw_ptr<views::View> top_container_ = nullptr;
++  raw_ptr<views::View> vertical_tab_strip_container_ = nullptr;
+   raw_ptr<TabStripRegionView> tab_strip_region_view_ = nullptr;
+   raw_ptr<ToolbarView> toolbar_ = nullptr;
+   raw_ptr<InfoBarContainerView> infobar_container_ = nullptr;
+--- a/chrome/browser/ui/views/tabs/tab_strip.cc
++++ b/chrome/browser/ui/views/tabs/tab_strip.cc
+@@ -30,6 +30,7 @@
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/tabs/features.h"
+ #include "chrome/browser/ui/tabs/tab_group_theme.h"
++#include "chrome/browser/ui/tabs/tab_style.h"
+ #include "chrome/browser/ui/tabs/tab_types.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/view_ids.h"
+@@ -485,6 +486,16 @@ TabStrip::TabStrip(std::unique_ptr<TabStripController> controller)
+   controller_->SetTabStripInterface(this);
+   Init();
+   SetEventTargeter(std::make_unique<views::ViewTargeter>(this));
++
++  // Configure for vertical layout if enabled
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    // Use vertical box layout instead of horizontal
++    SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kVertical,
++        gfx::Insets(),
++        0  // No spacing between tabs
++    ));
++  }
+ }
+
+ TabStrip::~TabStrip() {
+@@ -1542,6 +1553,13 @@ gfx::Size TabStrip::CalculatePreferredSize(
+   const int min_height = GetLayoutConstant(TAB_HEIGHT);
+   return gfx::Size(preferred_width, min_height);
+ } else {
++    // Vertical tabs preferred size
++    if (tabs::IsVerticalTabsFeatureEnabled()) {
++      const int tab_width = GetLayoutConstant(VERTICAL_TAB_STRIP_HORIZONTAL_PADDING) * 2 +
++                            TabStyle::GetStandardWidth();
++      return gfx::Size(tab_width, SizeVector::kNotUsed);
++    }
++
+     return gfx::Size(calculated_width, GetLayoutConstant(TAB_HEIGHT));
+   }
+ }
+--- a/chrome/browser/ui/layout_constants.cc
++++ b/chrome/browser/ui/layout_constants.cc
+@@ -6,6 +6,7 @@
+
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/layout_constants.h"
++#include "chrome/browser/ui/tabs/features.h"
+ #include "ui/base/pointer/touch_ui_controller.h"
+
+ #if BUILDFLAG(IS_MAC)
+@@ -119,7 +120,7 @@ int GetLayoutConstant(LayoutConstant constant) {
+       return 8;
+     case VERTICAL_TAB_STRIP_HORIZONTAL_PADDING:
+-      return 12;
++      return 8;
+     default:
+       NOTREACHED();
+   }
+--- a/chrome/browser/helium_flag_entries.h
++++ b/chrome/browser/helium_flag_entries.h
+@@ -28,4 +28,8 @@
+      "Middle Click Autoscroll",
+      "Enables autoscroll on middle click. Helium flag, Chromium feature.",
+      kOsDesktop, FEATURE_VALUE_TYPE(blink::features::kHeliumMiddleClickAutoscroll)},
++    {"vertical-tabs",
++     "Vertical Tabs",
++     "Display tabs in a vertical sidebar instead of the top tab bar. Helium flag.",
++     kOsDesktop, FEATURE_VALUE_TYPE(tabs::kVerticalTabs)},
+ #endif  /* CHROME_BROWSER_HELIUM_FLAG_ENTRIES_H_ */

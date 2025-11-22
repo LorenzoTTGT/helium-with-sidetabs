@@ -1,0 +1,199 @@
+name: Build Helium with Vertical Tabs
+
+on:
+  workflow_dispatch:  # Manual trigger
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'patches/**'
+      - '.github/workflows/**'
+
+jobs:
+  build-macos:
+    name: Build for macOS
+    runs-on: macos-latest
+    timeout-minutes: 360  # 6 hours max
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        brew install ninja
+
+    - name: Download Chromium source
+      run: |
+        python3 devutils/download_source.py
+
+    - name: Apply patches
+      run: |
+        python3 devutils/apply_patches.py
+
+    - name: Generate build files
+      run: |
+        python3 devutils/generate_build_files.py
+
+    - name: Build Helium
+      run: |
+        python3 devutils/build.py
+
+    - name: Package binary
+      run: |
+        cd buildspace/tree/out/Default
+        # Create app bundle
+        mkdir -p Helium.app/Contents/MacOS
+        cp helium Helium.app/Contents/MacOS/
+        cp -r *.pak locales Helium.app/Contents/MacOS/
+
+        # Create DMG
+        hdiutil create -volname "Helium Vertical Tabs" \
+          -srcfolder Helium.app \
+          -ov -format UDZO \
+          helium-vertical-tabs-macos.dmg
+
+    - name: Upload macOS build
+      uses: actions/upload-artifact@v3
+      with:
+        name: helium-vertical-tabs-macos
+        path: buildspace/tree/out/Default/helium-vertical-tabs-macos.dmg
+        retention-days: 30
+
+  build-linux:
+    name: Build for Linux
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          ninja-build \
+          libglib2.0-dev \
+          libnss3-dev \
+          libgtk-3-dev \
+          libpango1.0-dev \
+          libatk1.0-dev \
+          libcairo2-dev \
+          libx11-dev \
+          libxcomposite-dev \
+          libxrandr-dev \
+          libxdamage-dev \
+          libxi-dev \
+          libxext-dev \
+          libcups2-dev \
+          libxss-dev \
+          libasound2-dev \
+          libpulse-dev \
+          libdbus-1-dev \
+          libdrm-dev \
+          libgbm-dev
+
+    - name: Download Chromium source
+      run: |
+        python3 devutils/download_source.py
+
+    - name: Apply patches
+      run: |
+        python3 devutils/apply_patches.py
+
+    - name: Generate build files
+      run: |
+        python3 devutils/generate_build_files.py
+
+    - name: Build Helium
+      run: |
+        python3 devutils/build.py
+
+    - name: Package binary
+      run: |
+        cd buildspace/tree/out/Default
+        tar -czf helium-vertical-tabs-linux.tar.gz \
+          helium \
+          *.pak \
+          locales/ \
+          libEGL.so \
+          libGLESv2.so \
+          libvk_swiftshader.so \
+          libvulkan.so.1
+
+    - name: Upload Linux build
+      uses: actions/upload-artifact@v3
+      with:
+        name: helium-vertical-tabs-linux
+        path: buildspace/tree/out/Default/helium-vertical-tabs-linux.tar.gz
+        retention-days: 30
+
+  create-release:
+    name: Create Release
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Download macOS artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: helium-vertical-tabs-macos
+        path: ./artifacts
+
+    - name: Download Linux artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: helium-vertical-tabs-linux
+        path: ./artifacts
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v1.0-vertical-tabs-${{ github.run_number }}
+        name: Helium with Vertical Tabs v1.0
+        body: |
+          ## Helium Browser with Vertical Tabs Sidebar
+
+          ### Features
+          - ✅ Resizable sidebar (150-500px)
+          - ✅ Left/right positioning
+          - ✅ Right-click context menu
+          - ✅ Persistent preferences
+
+          ### How to Use
+
+          **macOS:**
+          1. Download `helium-vertical-tabs-macos.dmg`
+          2. Open DMG and drag Helium to Applications
+          3. Run: `open -a Helium --args --enable-features=VerticalTabs`
+
+          **Linux:**
+          1. Download `helium-vertical-tabs-linux.tar.gz`
+          2. Extract: `tar -xzf helium-vertical-tabs-linux.tar.gz`
+          3. Run: `./helium --enable-features=VerticalTabs`
+
+          ### Controls
+          - **Resize**: Drag sidebar edge
+          - **Move**: Right-click sidebar → Choose position
+          - **Reset**: Right-click sidebar → Reset width
+        files: |
+          ./artifacts/*
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
