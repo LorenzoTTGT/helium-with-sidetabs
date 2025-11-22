@@ -60,7 +60,7 @@ jobs:
           helium-vertical-tabs-macos.dmg
 
     - name: Upload macOS build
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: helium-vertical-tabs-macos
         path: buildspace/tree/out/Default/helium-vertical-tabs-macos.dmg
@@ -136,7 +136,7 @@ jobs:
           libvulkan.so.1
 
     - name: Upload Linux build
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: helium-vertical-tabs-linux
         path: buildspace/tree/out/Default/helium-vertical-tabs-linux.tar.gz
@@ -150,13 +150,13 @@ jobs:
 
     steps:
     - name: Download macOS artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: helium-vertical-tabs-macos
         path: ./artifacts
 
     - name: Download Linux artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: helium-vertical-tabs-linux
         path: ./artifacts
