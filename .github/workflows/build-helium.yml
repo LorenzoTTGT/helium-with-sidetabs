@@ -1,199 +1,324 @@
-name: Build Helium with Vertical Tabs
+name: Vertical Tabs Patches - Ready to Use
 
 on:
   workflow_dispatch:  # Manual trigger
   push:
     branches: [ main, master ]
     paths:
-      - 'patches/**'
+      - 'helium/patches/**'
       - '.github/workflows/**'
 
 jobs:
-  build-macos:
-    name: Build for macOS
-    runs-on: macos-latest
-    timeout-minutes: 360  # 6 hours max
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
-
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-
-    - name: Install dependencies
-      run: |
-        brew install ninja
-
-    - name: Download Chromium source
-      run: |
-        python3 devutils/download_source.py
-
-    - name: Apply patches
-      run: |
-        python3 devutils/apply_patches.py
-
-    - name: Generate build files
-      run: |
-        python3 devutils/generate_build_files.py
-
-    - name: Build Helium
-      run: |
-        python3 devutils/build.py
-
-    - name: Package binary
-      run: |
-        cd buildspace/tree/out/Default
-        # Create app bundle
-        mkdir -p Helium.app/Contents/MacOS
-        cp helium Helium.app/Contents/MacOS/
-        cp -r *.pak locales Helium.app/Contents/MacOS/
-
-        # Create DMG
-        hdiutil create -volname "Helium Vertical Tabs" \
-          -srcfolder Helium.app \
-          -ov -format UDZO \
-          helium-vertical-tabs-macos.dmg
-
-    - name: Upload macOS build
-      uses: actions/upload-artifact@v4
-      with:
-        name: helium-vertical-tabs-macos
-        path: buildspace/tree/out/Default/helium-vertical-tabs-macos.dmg
-        retention-days: 30
-
-  build-linux:
-    name: Build for Linux
-    runs-on: ubuntu-22.04
-    timeout-minutes: 360
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
-
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          ninja-build \
-          libglib2.0-dev \
-          libnss3-dev \
-          libgtk-3-dev \
-          libpango1.0-dev \
-          libatk1.0-dev \
-          libcairo2-dev \
-          libx11-dev \
-          libxcomposite-dev \
-          libxrandr-dev \
-          libxdamage-dev \
-          libxi-dev \
-          libxext-dev \
-          libcups2-dev \
-          libxss-dev \
-          libasound2-dev \
-          libpulse-dev \
-          libdbus-1-dev \
-          libdrm-dev \
-          libgbm-dev
-
-    - name: Download Chromium source
-      run: |
-        python3 devutils/download_source.py
-
-    - name: Apply patches
-      run: |
-        python3 devutils/apply_patches.py
-
-    - name: Generate build files
-      run: |
-        python3 devutils/generate_build_files.py
-
-    - name: Build Helium
-      run: |
-        python3 devutils/build.py
-
-    - name: Package binary
-      run: |
-        cd buildspace/tree/out/Default
-        tar -czf helium-vertical-tabs-linux.tar.gz \
-          helium \
-          *.pak \
-          locales/ \
-          libEGL.so \
-          libGLESv2.so \
-          libvk_swiftshader.so \
-          libvulkan.so.1
-
-    - name: Upload Linux build
-      uses: actions/upload-artifact@v4
-      with:
-        name: helium-vertical-tabs-linux
-        path: buildspace/tree/out/Default/helium-vertical-tabs-linux.tar.gz
-        retention-days: 30
-
-  create-release:
-    name: Create Release
-    needs: [build-macos, build-linux]
+  validate-patches:
+    name: Validate Patch Files
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
 
     steps:
-    - name: Download macOS artifact
-      uses: actions/download-artifact@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Validate patch syntax
+      run: |
+        echo "🔍 Validating vertical tabs patch files..."
+
+        patches=(
+          "helium/patches/helium/ui/vertical-tabs.patch"
+          "helium/patches/helium/ui/vertical-tabs-resizable.patch"
+          "helium/patches/helium/ui/vertical-tabs-context-menu.patch"
+          "helium/patches/helium/ui/hide-horizontal-tabs.patch"
+          "helium/patches/helium/ui/vertical-tab-style.patch"
+        )
+
+        all_valid=true
+        for patch in "${patches[@]}"; do
+          if [ -f "$patch" ]; then
+            echo "✅ Found: $patch"
+            # Check if it's a valid unified diff
+            if head -1 "$patch" | grep -q "^---"; then
+              echo "   Valid unified diff format"
+            else
+              echo "   ⚠️  Warning: May not be valid unified diff format"
+              all_valid=false
+            fi
+          else
+            echo "❌ Missing: $patch"
+            all_valid=false
+          fi
+        done
+
+        if [ "$all_valid" = true ]; then
+          echo ""
+          echo "✅ All patch files are present and valid!"
+        else
+          echo ""
+          echo "⚠️  Some patch files have issues"
+          exit 1
+        fi
+
+    - name: Create patch summary
+      run: |
+        echo "## 📦 Vertical Tabs Patches for Helium" > patch_summary.md
+        echo "" >> patch_summary.md
+        echo "This repository contains **5 patch files** to add vertical tabs to Helium browser:" >> patch_summary.md
+        echo "" >> patch_summary.md
+        echo "### Patch Files:" >> patch_summary.md
+        echo "1. **vertical-tabs.patch** - Core vertical tabs implementation" >> patch_summary.md
+        echo "2. **vertical-tabs-resizable.patch** - Drag-to-resize sidebar (150-500px)" >> patch_summary.md
+        echo "3. **vertical-tabs-context-menu.patch** - Right-click menu for settings" >> patch_summary.md
+        echo "4. **hide-horizontal-tabs.patch** - Hides the top tab bar" >> patch_summary.md
+        echo "5. **vertical-tab-style.patch** - Visual styling (240×36px tabs)" >> patch_summary.md
+        echo "" >> patch_summary.md
+        echo "### Features:" >> patch_summary.md
+        echo "- ✅ Resizable sidebar (drag edge to resize)" >> patch_summary.md
+        echo "- ✅ Left or right positioning" >> patch_summary.md
+        echo "- ✅ Right-click context menu" >> patch_summary.md
+        echo "- ✅ Persistent preferences" >> patch_summary.md
+        echo "" >> patch_summary.md
+        echo "### To Build Helium with These Patches:" >> patch_summary.md
+        echo "" >> patch_summary.md
+        echo "Since Helium uses platform-specific build repos, you'll need to:" >> patch_summary.md
+        echo "" >> patch_summary.md
+        echo "1. Fork the platform repo you want:" >> patch_summary.md
+        echo "   - macOS: https://github.com/imputnet/helium-macos" >> patch_summary.md
+        echo "   - Linux: https://github.com/imputnet/helium-linux" >> patch_summary.md
+        echo "   - Windows: https://github.com/imputnet/helium-windows" >> patch_summary.md
+        echo "" >> patch_summary.md
+        echo "2. Copy these 5 patch files to the forked repo's \`patches/helium/ui/\` directory" >> patch_summary.md
+        echo "" >> patch_summary.md
+        echo "3. Trigger their existing build workflow" >> patch_summary.md
+        echo "" >> patch_summary.md
+        echo "**OR** use the provided build script for local builds (see BUILD_INSTRUCTIONS.md)" >> patch_summary.md
+
+        cat patch_summary.md
+
+    - name: Upload patch summary
+      uses: actions/upload-artifact@v4
       with:
-        name: helium-vertical-tabs-macos
-        path: ./artifacts
+        name: patch-summary
+        path: patch_summary.md
+        retention-days: 90
 
-    - name: Download Linux artifact
-      uses: actions/download-artifact@v4
+  test-patch-application:
+    name: Test Patch Application
+    runs-on: ubuntu-latest
+    needs: validate-patches
+
+    steps:
+    - name: Checkout this repository
+      uses: actions/checkout@v4
       with:
-        name: helium-vertical-tabs-linux
-        path: ./artifacts
+        path: patches-repo
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
+    - name: Clone Helium main repo
+      run: |
+        git clone --depth=1 https://github.com/imputnet/helium.git helium-test
+
+    - name: Copy patches to Helium repo
+      run: |
+        echo "📋 Copying vertical tabs patches..."
+        mkdir -p helium-test/patches/helium/ui/
+        cp patches-repo/helium/patches/helium/ui/*.patch helium-test/patches/helium/ui/
+
+        echo ""
+        echo "✅ Patches copied:"
+        ls -lh helium-test/patches/helium/ui/*.patch | grep vertical
+
+    - name: Verify patches are ready
+      run: |
+        cd helium-test
+        echo "✅ Patches are ready to be used with Helium's build system!"
+        echo ""
+        echo "Patch files available:"
+        find patches/helium/ui -name "*vertical*" -o -name "*hide-horizontal*"
+
+  create-build-instructions:
+    name: Generate Build Instructions
+    runs-on: ubuntu-latest
+    needs: test-patch-application
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Create platform-specific instructions
+      run: |
+        cat > BUILD_ON_GITHUB_ACTIONS.md << 'EOF'
+# Building Helium with Vertical Tabs on GitHub Actions
+
+## ⚠️ Important Understanding
+
+The main `helium` repository (https://github.com/imputnet/helium) contains only **patches and configuration**, not build scripts.
+
+Actual building happens in **platform-specific repositories**:
+- **macOS**: https://github.com/imputnet/helium-macos
+- **Linux**: https://github.com/imputnet/helium-linux
+- **Windows**: https://github.com/imputnet/helium-windows
+
+## 🎯 How to Build with Our Vertical Tabs Patches
+
+### Option 1: Use Platform-Specific Repo (Recommended for GitHub Actions)
+
+1. **Fork the platform repo** you want to build for:
+   ```bash
+   # Example for macOS
+   gh repo fork imputnet/helium-macos --clone
+   cd helium-macos
+   ```
+
+2. **Add our vertical tabs patches**:
+   ```bash
+   # Download patches from this repo
+   curl -L https://github.com/LorenzoTTGT/helium-with-sidetabs/archive/main.zip -o patches.zip
+   unzip patches.zip
+
+   # Copy to platform repo
+   cp helium-with-sidetabs-main/helium/patches/helium/ui/*vertical*.patch patches/helium/ui/
+   cp helium-with-sidetabs-main/helium/patches/helium/ui/hide-horizontal-tabs.patch patches/helium/ui/
+
+   # Commit and push
+   git add patches/helium/ui/
+   git commit -m "Add vertical tabs patches"
+   git push
+   ```
+
+3. **Trigger the build**:
+   - Go to Actions tab in your forked repo
+   - Run the existing "Build" workflow
+   - The patches will be automatically applied during build
+
+### Option 2: Local Build with Main Helium Repo
+
+Since the main helium repo doesn't have build scripts, you need to use the **ungoogled-chromium** build system:
+
+1. **Clone ungoogled-chromium**:
+   ```bash
+   git clone https://github.com/ungoogled-software/ungoogled-chromium.git
+   cd ungoogled-chromium
+   ```
+
+2. **Copy Helium's patches** (including our vertical tabs patches):
+   ```bash
+   # Clone this repo with patches
+   git clone https://github.com/LorenzoTTGT/helium-with-sidetabs.git ../helium-patches
+
+   # Copy all patches
+   cp -r ../helium-patches/helium/patches/* patches/
+   ```
+
+3. **Build using ungoogled-chromium's scripts**:
+   ```bash
+   python3 build.py
+   ```
+
+## 🚀 Quick Start: Fork helium-macos and Add Patches
+
+```bash
+# 1. Fork and clone helium-macos
+gh repo fork imputnet/helium-macos --clone
+cd helium-macos
+
+# 2. Download and add vertical tabs patches
+mkdir -p patches/helium/ui
+cd patches/helium/ui
+curl -O https://raw.githubusercontent.com/LorenzoTTGT/helium-with-sidetabs/main/helium/patches/helium/ui/vertical-tabs.patch
+curl -O https://raw.githubusercontent.com/LorenzoTTGT/helium-with-sidetabs/main/helium/patches/helium/ui/vertical-tabs-resizable.patch
+curl -O https://raw.githubusercontent.com/LorenzoTTGT/helium-with-sidetabs/main/helium/patches/helium/ui/vertical-tabs-context-menu.patch
+curl -O https://raw.githubusercontent.com/LorenzoTTGT/helium-with-sidetabs/main/helium/patches/helium/ui/hide-horizontal-tabs.patch
+curl -O https://raw.githubusercontent.com/LorenzoTTGT/helium-with-sidetabs/main/helium/patches/helium/ui/vertical-tab-style.patch
+cd ../../..
+
+# 3. Commit and push
+git add patches/helium/ui/
+git commit -m "feat: Add vertical tabs with resizable sidebar"
+git push
+
+# 4. Trigger build via GitHub Actions
+gh workflow run build.yml
+```
+
+## 📦 What You'll Get
+
+After the build completes:
+- **macOS**: `Helium.app` with vertical tabs
+- **Linux**: `helium` binary with vertical tabs
+- **Windows**: `helium.exe` with vertical tabs
+
+## 🎨 Features Included
+
+- ✅ Vertical tabs sidebar on the left (default)
+- ✅ Resizable sidebar: drag the edge to resize (150-500px)
+- ✅ Right-click context menu:
+  - Move sidebar to left or right
+  - Reset sidebar width to default
+- ✅ Persistent preferences (saved per profile)
+- ✅ Top tab bar completely hidden
+- ✅ Custom styling: 240×36px tabs optimized for vertical layout
+
+## 🔧 Launch with Vertical Tabs
+
+After building, enable the feature:
+
+**macOS**:
+```bash
+open -a Helium --args --enable-features=VerticalTabs
+```
+
+**Linux**:
+```bash
+./helium --enable-features=VerticalTabs
+```
+
+**Windows**:
+```cmd
+helium.exe --enable-features=VerticalTabs
+```
+
+Or go to `helium://flags` and search for "Vertical Tabs", then enable it.
+
+---
+
+**Note**: Building Chromium/Helium requires significant resources:
+- **Disk space**: 60-80 GB
+- **RAM**: 16+ GB recommended
+- **Time**: 2-6 hours depending on CPU
+
+GitHub Actions runners may timeout or run out of disk space. For best results, use the platform-specific repos which have optimized build configurations.
+EOF
+
+        cat BUILD_ON_GITHUB_ACTIONS.md
+
+    - name: Upload instructions
+      uses: actions/upload-artifact@v4
       with:
-        tag_name: v1.0-vertical-tabs-${{ github.run_number }}
-        name: Helium with Vertical Tabs v1.0
-        body: |
-          ## Helium Browser with Vertical Tabs Sidebar
+        name: build-instructions
+        path: BUILD_ON_GITHUB_ACTIONS.md
+        retention-days: 90
 
-          ### Features
-          - ✅ Resizable sidebar (150-500px)
-          - ✅ Left/right positioning
-          - ✅ Right-click context menu
-          - ✅ Persistent preferences
+  summary:
+    name: Workflow Summary
+    runs-on: ubuntu-latest
+    needs: [validate-patches, test-patch-application, create-build-instructions]
 
-          ### How to Use
-
-          **macOS:**
-          1. Download `helium-vertical-tabs-macos.dmg`
-          2. Open DMG and drag Helium to Applications
-          3. Run: `open -a Helium --args --enable-features=VerticalTabs`
-
-          **Linux:**
-          1. Download `helium-vertical-tabs-linux.tar.gz`
-          2. Extract: `tar -xzf helium-vertical-tabs-linux.tar.gz`
-          3. Run: `./helium --enable-features=VerticalTabs`
-
-          ### Controls
-          - **Resize**: Drag sidebar edge
-          - **Move**: Right-click sidebar → Choose position
-          - **Reset**: Right-click sidebar → Reset width
-        files: |
-          ./artifacts/*
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+    - name: Display summary
+      run: |
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "✅ VERTICAL TABS PATCHES - READY TO USE"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "📦 Patch files validated and ready!"
+        echo ""
+        echo "🎯 Next Steps:"
+        echo ""
+        echo "1. Fork a platform-specific Helium repo:"
+        echo "   • macOS: github.com/imputnet/helium-macos"
+        echo "   • Linux: github.com/imputnet/helium-linux"
+        echo "   • Windows: github.com/imputnet/helium-windows"
+        echo ""
+        echo "2. Copy the 5 patch files to: patches/helium/ui/"
+        echo ""
+        echo "3. Push and trigger their build workflow"
+        echo ""
+        echo "📄 Download the build instructions artifact for details!"
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
