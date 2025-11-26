@@ -34,8 +34,6 @@
        top_container_->AddChildView(std::make_unique<TabStripRegionView>(this));
 +  }
 
-   if (tabs::IsVerticalTabsFeatureEnabled()) {
-     auto vertical_tab_strip_container =
 --- a/chrome/browser/ui/views/frame/browser_view.h
 +++ b/chrome/browser/ui/views/frame/browser_view.h
 @@ -800,6 +800,9 @@ class BrowserView : public BrowserWindow,
