@@ -1,0 +1,248 @@
+--- a/chrome/browser/ui/tabs/tab_style.cc
++++ b/chrome/browser/ui/tabs/tab_style.cc
+@@ -10,6 +10,7 @@
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/tabs/features.h"
++#include "chrome/browser/ui/tabs/tab_enums.h"
+ #include "ui/base/ui_base_features.h"
+ #include "ui/gfx/animation/tween.h"
+
+@@ -24,6 +25,10 @@ constexpr int kChromeRefreshSeparatorHeight = 16;
+ // The padding from the top of the tab to the content area.
+ constexpr int kChromeRefreshTabVerticalPadding = 6;
+ constexpr int kChromeRefreshTabHorizontalPadding = 2;
++
++// Vertical tab dimensions
++constexpr int kVerticalTabWidth = 240;
++constexpr int kVerticalTabHeight = 36;
+
+ // The standard tab width is 232 DIP, excluding separators and overlap.
+ constexpr int kTabWidth = 190;
+@@ -45,6 +50,13 @@ int TabStyle::GetStandardWidth(const bool is_split) {
+ int TabStyle::GetStandardWidth(const bool is_split) {
+   CHECK(!base::FeatureList::IsEnabled(features::kChromeRefresh2023));
+
++  // Vertical tabs always use full width
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    return kVerticalTabWidth;
++  }
++
++  // Horizontal tab width calculation
+   if (is_split) {
+     // Split tabs appear as half width with one bottom extension. They also must
+     // include half the tab overlap as the tabs fill the space between them.
+@@ -67,6 +79,11 @@ int TabStyle::GetMinimumActiveWidth() const {
+ }
+
+ int TabStyle::GetMinimumInactiveWidth() const {
++  // Vertical tabs use same width for active and inactive
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    return kVerticalTabWidth;
++  }
++
+   return GetContentsInsets().width() + GetPinnedWidth();
+ }
+
+@@ -104,6 +121,13 @@ int TabStyle::GetContentsHorizontalInsetSize() const {
+   return GetContentsInsets().width();
+ }
+
++gfx::Insets TabStyle::GetContentsInsets() const {
++  // Vertical tabs need more horizontal padding
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    return gfx::Insets::VH(6, 12);
++  }
++  return gfx::Insets::VH(kChromeRefreshTabVerticalPadding, kChromeRefreshTabHorizontalPadding);
++}
++
+ int TabStyle::GetTopCornerRadius() const {
+   return 8;
+ }
+@@ -114,6 +138,11 @@ int TabStyle::GetBottomCornerRadius() const {
+
+ int TabStyle::GetTabOverlap() const {
++  // No overlap for vertical tabs
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    return 0;
++  }
++
+   // TODO: We should consider using
+   // GetContentsInsets().left() + GetBottomCornerRadius() for this, but this
+   // value is not correct for non-refresh GM2.
+@@ -122,6 +151,24 @@ int TabStyle::GetTabOverlap() const {
+
+ gfx::Size TabStyle::GetSeparatorSize() const {
++  // Vertical tabs use horizontal separator
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    return gfx::Size(kVerticalTabWidth - 16, 1);
++  }
++
+   return gfx::Size(kChromeRefreshSeparatorThickness,
+                    kChromeRefreshSeparatorHeight);
+ }
++
++int TabStyle::GetDragHandleExtension(int tab_height) const {
++  // No drag handle extension for vertical tabs
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    return 0;
++  }
++  return GetLayoutConstant(TABSTRIP_TOOLBAR_OVERLAP);
++}
++
++int TabStyle::GetHeight() const {
++  return tabs::IsVerticalTabsFeatureEnabled() ? kVerticalTabHeight
++                                               : GetLayoutConstant(TAB_HEIGHT);
++}
+--- a/chrome/browser/ui/views/tabs/tab.cc
++++ b/chrome/browser/ui/views/tabs/tab.cc
+@@ -30,6 +30,7 @@
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/tabs/features.h"
+ #include "chrome/browser/ui/tabs/tab_style.h"
++#include "chrome/browser/ui/tabs/tab_types.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/view_ids.h"
+ #include "chrome/browser/ui/views/chrome_layout_provider.h"
+@@ -380,6 +381,28 @@ void Tab::AnimationProgressed(const gfx::Animation* animation) {
+   SchedulePaint();
+ }
+
++gfx::Size Tab::CalculatePreferredSize(
++    const views::SizeBounds& available_size) const {
++  // Vertical tabs have fixed width and height
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    const int width = TabStyle::Get()->GetStandardWidth();
++    const int height = TabStyle::Get()->GetHeight();
++    return gfx::Size(width, height);
++  }
++
++  // Horizontal tab size calculation
++  int width = 0;
++  if (data_.pinned) {
++    width = TabStyle::Get()->GetPinnedWidth();
++  } else {
++    width = TabStyle::Get()->GetStandardWidth();
++  }
++
++  const int height = GetLayoutConstant(TAB_HEIGHT);
++  return gfx::Size(width, height);
++}
++
++
+ void Tab::OnPaint(gfx::Canvas* canvas) {
+   // Paint the tab background and other decorations.
+   PaintTab(canvas);
+@@ -1164,6 +1187,12 @@ void Tab::UpdateIconVisibility() {
+   // Update the favicon.
+   showing_icon_ = ShouldShowIcon();
+
++  // Vertical tabs always show close button on hover
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    showing_close_button_ = mouse_hovered_ || IsActive();
++    return;
++  }
++
+   const int close_button_width = GetLayoutConstant(TAB_CLOSE_BUTTON_SIZE) +
+                                  GetLayoutConstant(TAB_AFTER_TITLE_PADDING);
+   const bool large_enough_for_close_button = mouse_hovered_ &&
+--- a/chrome/browser/ui/views/tabs/tab_strip.cc
++++ b/chrome/browser/ui/views/tabs/tab_strip.cc
+@@ -1542,6 +1542,23 @@ gfx::Size TabStrip::CalculatePreferredSize(
+   const int min_height = GetLayoutConstant(TAB_HEIGHT);
+   return gfx::Size(preferred_width, min_height);
+ } else {
++    // Vertical tabs: calculate height based on number of tabs
++    if (tabs::IsVerticalTabsFeatureEnabled()) {
++      const int tab_count = GetTabCount();
++      const int tab_height = TabStyle::Get()->GetHeight();
++      const int separator_height = 0;  // No separator in vertical mode
++      const int padding = GetLayoutConstant(TAB_STRIP_PADDING) * 2;
++
++      int total_height = padding;
++      for (int i = 0; i < tab_count; ++i) {
++        total_height += tab_height;
++        if (i < tab_count - 1) {
++          total_height += separator_height;
++        }
++      }
++
++      return gfx::Size(TabStyle::Get()->GetStandardWidth(), total_height);
++    }
++
+     return gfx::Size(calculated_width, GetLayoutConstant(TAB_HEIGHT));
+   }
+ }
+@@ -2156,6 +2173,13 @@ void TabStrip::UpdateTabGroupVisuals(tab_groups::TabGroupId group) {
+ }
+
+ void TabStrip::LayoutDraggedTabsAt(Tabs tabs, Tab* active_tab, int x, int y) {
++  // Vertical tabs layout
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    // In vertical mode, x stays constant, only y changes
++    for (Tab* tab : tabs) {
++      tab->SetBounds(0, y, TabStyle::Get()->GetStandardWidth(), TabStyle::Get()->GetHeight());
++      y += TabStyle::Get()->GetHeight();
++    }
++    return;
++  }
++
+   // Dragged tabs should always be in front of other tabs.
+   std::vector<Tab*> tabs_to_reorder;
+--- a/chrome/browser/ui/views/tabs/tab_close_button.cc
++++ b/chrome/browser/ui/views/tabs/tab_close_button.cc
+@@ -12,6 +12,7 @@
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/tabs/features.h"
++#include "chrome/browser/ui/tabs/tab_style.h"
+ #include "chrome/browser/ui/views/chrome_layout_provider.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "components/vector_icons/vector_icons.h"
+@@ -71,6 +72,13 @@ TabCloseButton::TabCloseButton(PressedCallback pressed_callback,
+   // but needs to be explicitly mirrored for RTL.
+   // TODO(http://crbug.com/1056490): Make ink drops in RTL work the same way as
+   // focus rings.
++
++  // Use rounded rectangle for vertical tabs
++  if (tabs::IsVerticalTabsFeatureEnabled()) {
++    auto ink_drop_highlight_path =
++        std::make_unique<views::RoundRectHighlightPathGenerator>(
++            gfx::Insets(), 6);
++  } else {
+   auto ink_drop_highlight_path =
+       std::make_unique<views::RoundRectHighlightPathGenerator>(kInkDropInsets, kCornerRadius);
+   ink_drop_highlight_path->set_use_contents_bounds(true);
+@@ -78,6 +86,7 @@ TabCloseButton::TabCloseButton(PressedCallback pressed_callback,
+   views::HighlightPathGenerator::Install(this,
+                                          std::move(ink_drop_highlight_path));
+
++  }
+   // TODO(http://crbug.com/1056490): Once this bug is solved and explicit
+   // mirroring for ink drops is not needed, we can combine these two.
+   auto ring_highlight_path =
+--- a/chrome/browser/ui/color/chrome_color_mixer.cc
++++ b/chrome/browser/ui/color/chrome_color_mixer.cc
+@@ -8,6 +8,7 @@
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/color/chrome_color_provider_utils.h"
+ #include "chrome/browser/ui/color/new_tab_page_color_mixer.h"
++#include "chrome/browser/ui/tabs/features.h"
+ #include "ui/color/color_mixer.h"
+ #include "ui/color/color_provider.h"
+ #include "ui/color/color_recipe.h"
+@@ -82,6 +83,14 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
+       {kColorTabBackgroundInactiveFrameInactive, kColorToolbar},
+       {kColorTabBackgroundInactiveHoverFrameActive, ui::kColorSysTonalContainer},
+       {kColorTabBackgroundInactiveHoverFrameInactive, ui::kColorSysTonalContainer},
++
++      // Vertical tab colors
++      {kColorTabBackgroundActiveFrameActive,
++       tabs::IsVerticalTabsFeatureEnabled() ? ui::kColorSysStateHoverOnSubtle
++                                             : kColorToolbar},
++      {kColorTabBackgroundInactiveFrameActive,
++       tabs::IsVerticalTabsFeatureEnabled() ? kColorToolbar
++                                             : kColorToolbar},
+   });
+
+   // Tab foreground colors.

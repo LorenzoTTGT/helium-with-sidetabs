@@ -1,0 +1,346 @@
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -32,6 +32,7 @@
+ #include "chrome/browser/ui/tabs/features.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/views/frame/browser_view_layout.h"
++#include "chrome/browser/ui/views/frame/vertical_tab_strip_resize_area.h"
+ #include "chrome/browser/ui/views/tabs/tab_strip_region_view.h"
+ #include "ui/views/layout/box_layout.h"
+ #include "ui/views/layout/fill_layout.h"
+@@ -792,6 +793,23 @@ BrowserView::BrowserView(Browser* browser)
+
+   top_container_ = AddChildView(std::make_unique<TopContainerView>(this));
+
++  // Create vertical tab strip with resize handle if enabled
+   if (tabs::IsVerticalTabsFeatureEnabled() && GetIsNormalType()) {
++    // Get saved width from preferences
++    PrefService* prefs = browser_->profile()->GetPrefs();
++    int saved_width = prefs->GetInteger("helium.vertical_tabs.width");
++    if (saved_width < 150) saved_width = 250;  // Default
++    if (saved_width > 500) saved_width = 500;  // Max
++
+     auto vertical_tab_strip_container =
+         std::make_unique<views::View>();
+     vertical_tab_strip_container->SetLayoutManager(
+         std::make_unique<views::FillLayout>());
+     vertical_tab_strip_container_ =
+         AddChildViewAt(std::move(vertical_tab_strip_container), 0);
+
+     // Add tab strip to vertical container
+     tab_strip_region_view_ =
+         vertical_tab_strip_container_->AddChildView(
+             std::make_unique<TabStripRegionView>(this));
++
++    // Add resize handle
++    vertical_tab_resize_area_ = AddChildViewAt(
++        std::make_unique<VerticalTabStripResizeArea>(this), 1);
++
++    // Set initial width
++    vertical_tab_strip_width_ = saved_width;
+   } else {
+     tab_strip_region_view_ =
+         top_container_->AddChildView(std::make_unique<TabStripRegionView>(this));
+   }
++
++void BrowserView::SetVerticalTabStripWidth(int width) {
++  // Clamp width
++  width = std::max(150, std::min(500, width));
++
++  if (vertical_tab_strip_width_ != width) {
++    vertical_tab_strip_width_ = width;
++
++    // Save to preferences
++    PrefService* prefs = browser_->profile()->GetPrefs();
++    prefs->SetInteger("helium.vertical_tabs.width", width);
++
++    // Trigger layout update
++    InvalidateLayout();
++    Layout();
++  }
++}
++
++int BrowserView::GetVerticalTabStripWidth() const {
++  return vertical_tab_strip_width_;
++}
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -800,6 +800,12 @@ class BrowserView : public BrowserWindow,
+   // The view holding the tabstrip and toolbar.
+   raw_ptr<TopContainerView> top_container_ = nullptr;
+
+   // Container for vertical tab strip (when enabled)
+   raw_ptr<views::View> vertical_tab_strip_container_ = nullptr;
++
++  // Resize handle for vertical tab strip
++  raw_ptr<views::View> vertical_tab_resize_area_ = nullptr;
++
++  // Current width of vertical tab strip
++  int vertical_tab_strip_width_ = 250;
+
+   // The TabStrip region view.
+   raw_ptr<TabStripRegionView> tab_strip_region_view_ = nullptr;
++
++  // Methods for resizable vertical tabs
++  void SetVerticalTabStripWidth(int width);
++  int GetVerticalTabStripWidth() const;
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_resize_area.cc
+@@ -0,0 +1,145 @@
++// Copyright 2025 The Helium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/frame/vertical_tab_strip_resize_area.h"
++
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "ui/base/cursor/cursor.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/gfx/canvas.h"
++#include "ui/views/background.h"
++#include "ui/views/border.h"
++
++namespace {
++constexpr int kResizeAreaWidth = 4;
++constexpr int kResizeAreaHitWidth = 8;  // Wider hit area for easier grabbing
++constexpr int kMinTabStripWidth = 150;
++constexpr int kMaxTabStripWidth = 500;
++}  // namespace
++
++VerticalTabStripResizeArea::VerticalTabStripResizeArea(BrowserView* browser_view)
++    : browser_view_(browser_view) {
++  SetCanProcessEventsWithinSubtree(true);
++
++  // Visual styling
++  SetBackground(views::CreateThemedSolidBackground(kColorToolbarSeparator));
++  SetPreferredSize(gfx::Size(kResizeAreaWidth, 0));
++}
++
++VerticalTabStripResizeArea::~VerticalTabStripResizeArea() = default;
++
++ui::Cursor VerticalTabStripResizeArea::GetCursor(const ui::MouseEvent& event) {
++  return ui::mojom::CursorType::kEastWestResize;
++}
++
++bool VerticalTabStripResizeArea::OnMousePressed(const ui::MouseEvent& event) {
++  if (event.IsOnlyLeftMouseButton()) {
++    resize_start_x_ = event.location().x();
++    initial_width_ = browser_view_->GetVerticalTabStripWidth();
++    is_resizing_ = true;
++    return true;
++  }
++  return false;
++}
++
++bool VerticalTabStripResizeArea::OnMouseDragged(const ui::MouseEvent& event) {
++  if (!is_resizing_)
++    return false;
++
++  int delta = event.location().x() - resize_start_x_;
++
++  // Check if sidebar is on the right side
++  PrefService* prefs = browser_view_->GetProfile()->GetPrefs();
++  bool on_right = prefs->GetBoolean("helium.vertical_tabs.on_right");
++
++  if (on_right) {
++    delta = -delta;  // Reverse delta for right-side
++  }
++
++  int new_width = initial_width_ + delta;
++  new_width = std::max(kMinTabStripWidth, std::min(kMaxTabStripWidth, new_width));
++
++  browser_view_->SetVerticalTabStripWidth(new_width);
++  return true;
++}
++
++void VerticalTabStripResizeArea::OnMouseReleased(const ui::MouseEvent& event) {
++  is_resizing_ = false;
++}
++
++void VerticalTabStripResizeArea::OnMouseCaptureLost() {
++  is_resizing_ = false;
++}
++
++gfx::Size VerticalTabStripResizeArea::CalculatePreferredSize(
++    const views::SizeBounds& available_size) const {
++  return gfx::Size(kResizeAreaWidth, 0);
++}
++
++void VerticalTabStripResizeArea::OnPaint(gfx::Canvas* canvas) {
++  View::OnPaint(canvas);
++
++  // Draw subtle grip indicator
++  if (is_resizing_ || IsMouseHovered()) {
++    const SkColor grip_color = GetColorProvider()->GetColor(
++        kColorToolbarSeparator);
++
++    const int center_x = width() / 2;
++    const int center_y = height() / 2;
++    const int grip_height = 40;
++    const int grip_spacing = 2;
++
++    cc::PaintFlags flags;
++    flags.setColor(grip_color);
++    flags.setAntiAlias(true);
++
++    // Draw three vertical dots
++    for (int i = -1; i <= 1; ++i) {
++      canvas->DrawCircle(
++          gfx::Point(center_x, center_y + i * (grip_spacing + 2)),
++          1, flags);
++    }
++  }
++}
++
++bool VerticalTabStripResizeArea::OnMouseWheel(const ui::MouseWheelEvent& event) {
++  return false;
++}
++
++gfx::NativeViewAccessible VerticalTabStripResizeArea::GetNativeViewAccessible() {
++  return View::GetNativeViewAccessible();
++}
++
++void VerticalTabStripResizeArea::OnThemeChanged() {
++  View::OnThemeChanged();
++  SchedulePaint();
++}
++
++BEGIN_METADATA(VerticalTabStripResizeArea)
++END_METADATA
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_resize_area.h
+@@ -0,0 +1,52 @@
++// Copyright 2025 The Helium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_FRAME_VERTICAL_TAB_STRIP_RESIZE_AREA_H_
++#define CHROME_BROWSER_UI_VIEWS_FRAME_VERTICAL_TAB_STRIP_RESIZE_AREA_H_
++
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/views/view.h"
++
++class BrowserView;
++
++// A resize handle for the vertical tab strip that allows users to drag
++// and adjust the width of the sidebar.
++class VerticalTabStripResizeArea : public views::View {
++  METADATA_HEADER(VerticalTabStripResizeArea, views::View)
++
++ public:
++  explicit VerticalTabStripResizeArea(BrowserView* browser_view);
++  ~VerticalTabStripResizeArea() override;
++
++  // views::View:
++  ui::Cursor GetCursor(const ui::MouseEvent& event) override;
++  bool OnMousePressed(const ui::MouseEvent& event) override;
++  bool OnMouseDragged(const ui::MouseEvent& event) override;
++  void OnMouseReleased(const ui::MouseEvent& event) override;
++  void OnMouseCaptureLost() override;
++  gfx::Size CalculatePreferredSize(
++      const views::SizeBounds& available_size) const override;
++  void OnPaint(gfx::Canvas* canvas) override;
++  bool OnMouseWheel(const ui::MouseWheelEvent& event) override;
++  gfx::NativeViewAccessible GetNativeViewAccessible() override;
++  void OnThemeChanged() override;
++
++ private:
++  raw_ptr<BrowserView> browser_view_;
++
++  // Resize state
++  bool is_resizing_ = false;
++  int resize_start_x_ = 0;
++  int initial_width_ = 0;
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_VERTICAL_TAB_STRIP_RESIZE_AREA_H_
+--- a/chrome/browser/ui/views/frame/browser_view_layout.cc
++++ b/chrome/browser/ui/views/frame/browser_view_layout.cc
+@@ -299,16 +299,25 @@ int BrowserViewLayout::LayoutTabStrip(int top, int width,
+                                        int browser_view_y) {
+   TRACE_EVENT0("ui", "BrowserViewLayout::LayoutTabStrip");
+   if (delegate_->IsTabStripVisible()) {
+     // Handle vertical tab strip layout
+     if (tabs::IsVerticalTabsFeatureEnabled() &&
+         vertical_tab_strip_container_ != nullptr) {
+
+-      constexpr int kVerticalTabStripWidth = 250;
++      // Get width from BrowserView (which may have been resized)
++      int vertical_tab_strip_width =
++          static_cast<BrowserView*>(browser_view_)->GetVerticalTabStripWidth();
++
+       const int vertical_tab_strip_height =
+           std::max(0, height_ - top - infobar_y_);
++
++      // Check if sidebar should be on the right
++      PrefService* prefs = browser_view_->GetProfile()->GetPrefs();
++      bool on_right = prefs->GetBoolean("helium.vertical_tabs.on_right");
++
++      int x_position = on_right ? (width_ - vertical_tab_strip_width) : 0;
+
+       // Position vertical tab strip
+       vertical_tab_strip_container_->SetBounds(
+-          0, top, kVerticalTabStripWidth, vertical_tab_strip_height);
++          x_position, top, vertical_tab_strip_width, vertical_tab_strip_height);
+
+       // Make tab strip region fill the vertical container
+       if (tab_strip_region_view_) {
+         tab_strip_region_view_->SetBounds(
+-            0, 0, kVerticalTabStripWidth, vertical_tab_strip_height);
++            0, 0, vertical_tab_strip_width, vertical_tab_strip_height);
+       }
++
++      // Position resize handle
++      constexpr int kResizeHandleWidth = 4;
++      int resize_x = on_right ?
++          (width_ - vertical_tab_strip_width - kResizeHandleWidth) :
++          vertical_tab_strip_width;
++
++      if (vertical_tab_resize_area_) {
++        vertical_tab_resize_area_->SetBounds(
++            resize_x, top, kResizeHandleWidth, vertical_tab_strip_height);
++      }
+
+       SetViewVisibility(vertical_tab_strip_container_, true);
++      SetViewVisibility(vertical_tab_resize_area_, true);
+
+       // Adjust available bounds to account for vertical tab strip
+-      available_bounds->set_x(kVerticalTabStripWidth);
+-      available_bounds->set_width(
+-          available_bounds->width() - kVerticalTabStripWidth);
++      if (on_right) {
++        available_bounds->set_width(
++            available_bounds->width() - vertical_tab_strip_width - kResizeHandleWidth);
++      } else {
++        available_bounds->set_x(vertical_tab_strip_width + kResizeHandleWidth);
++        available_bounds->set_width(
++            available_bounds->width() - vertical_tab_strip_width - kResizeHandleWidth);
++      }
+
+       // Hide the top tab strip region
+       if (tab_strip_region_view_ &&
+--- a/chrome/browser/ui/views/frame/browser_view_layout.h
++++ b/chrome/browser/ui/views/frame/browser_view_layout.h
+@@ -182,6 +182,7 @@ class BrowserViewLayout : public views::LayoutManagerBase {
+
+   raw_ptr<views::View> top_container_ = nullptr;
+   raw_ptr<views::View> vertical_tab_strip_container_ = nullptr;
++  raw_ptr<views::View> vertical_tab_resize_area_ = nullptr;
+   raw_ptr<TabStripRegionView> tab_strip_region_view_ = nullptr;
+   raw_ptr<ToolbarView> toolbar_ = nullptr;
+   raw_ptr<InfoBarContainerView> infobar_container_ = nullptr;
+--- a/chrome/browser/prefs/browser_prefs.cc
++++ b/chrome/browser/prefs/browser_prefs.cc
+@@ -500,6 +500,11 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
+       policy::policy_prefs::kNativeWindowOcclusionEnabled, false,
+       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+ #endif
++
++  // Helium vertical tabs preferences
++  registry->RegisterIntegerPref("helium.vertical_tabs.width", 250);
++  registry->RegisterBooleanPref("helium.vertical_tabs.on_right", false);
++  registry->RegisterBooleanPref("helium.vertical_tabs.enabled", true);
+ }
+
+ void RegisterLocalState(PrefRegistrySimple* registry) {
